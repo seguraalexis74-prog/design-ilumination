@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>App de Iluminación (Mockup)</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 0; background: #0f1115; color: #e8e8e8; }
+    header { padding: 14px 16px; border-bottom: 1px solid #242833; display:flex; gap:12px; align-items:center; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+    .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px; }
+    .panel { background: #151925; border: 1px solid #242833; border-radius: 14px; padding: 14px; }
+    .panel h2 { font-size: 14px; margin: 0 0 12px; opacity: .9; }
+    .row { display:flex; gap:10px; align-items:center; margin: 10px 0; }
+    .row label { min-width: 108px; font-size: 12px; opacity: .85; }
+    .row input[type="range"] { width: 100%; }
+    .row input[type="color"] { width: 44px; height: 28px; border: none; background: transparent; padding: 0; }
+    .row input[type="file"] { width: 100%; }
+    .btns { display:flex; gap:10px; flex-wrap: wrap; margin-top: 12px; }
+    button {
+      background: #2a3142; color: #fff; border: 1px solid #3a435a;
+      padding: 10px 12px; border-radius: 10px; cursor:pointer; font-weight: 600;
+    }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .hint { font-size: 12px; opacity: .8; line-height: 1.35; }
+    .stage {
+      background: #0b0d12; border: 1px solid #242833; border-radius: 14px;
+      padding: 10px; display:flex; justify-content:center; align-items:center; min-height: 520px;
+      overflow: hidden;
+    }
+    canvas { max-width: 100%; height: auto; border-radius: 10px; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0b0d12; border:1px solid #242833; padding: 2px 6px; border-radius: 8px; }
+    @media (max-width: 980px){
+      .wrap { grid-template-columns: 1fr; }
+      .stage { min-height: 420px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>App de Iluminación · mockup rápido</h1>
+    <div class="hint">Subí una foto → dibujá tiras LED → exportá PNG</div>
+  </header>
+
+  <div class="wrap">
+    <div class="panel">
+      <h2>Controles</h2>
+
+      <div class="row">
+        <label>Imagen</label>
+        <input id="file" type="file" accept="image/*" />
+      </div>
+
+      <div class="row">
+        <label>Color</label>
+        <input id="color" type="color" value="#ffd9a6" />
+        <span id="colorLabel" class="hint">#FFD9A6</span>
+      </div>
+
+      <div class="row">
+        <label>Grosor</label>
+        <input id="width" type="range" min="1" max="30" value="10" />
+        <span id="widthLabel" class="hint">10px</span>
+      </div>
+
+      <div class="row">
+        <label>Glow</label>
+        <input id="glow" type="range" min="0" max="40" value="18" />
+        <span id="glowLabel" class="hint">18</span>
+      </div>
+
+      <div class="row">
+        <label>Intensidad</label>
+        <input id="alpha" type="range" min="5" max="100" value="85" />
+        <span id="alphaLabel" class="hint">85%</span>
+      </div>
+
+      <div class="row">
+        <label>Modo</label>
+        <select id="mode" style="width:100%; padding:9px 10px; border-radius:10px; border:1px solid #3a435a; background:#0b0d12; color:#fff;">
+          <option value="draw">Dibujar</option>
+          <option value="erase">Borrar</option>
+          <option value="pan">Mover (drag)</option>
+        </select>
+      </div>
+
+      <div class="btns">
+        <button id="undo" disabled>Undo</button>
+        <button id="clear" disabled>Limpiar LEDs</button>
+        <button id="export" disabled>Exportar PNG</button>
+      </div>
+
+      <div class="hint" style="margin-top:12px;">
+        Tips:
+        <ul>
+          <li>Arrastrá para dibujar la “tira”.</li>
+          <li>En <span class="kbd">Mover</span> podés desplazar la vista.</li>
+          <li>Exporta con fondo + LEDs.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="stage">
+      <canvas id="c"></canvas>
+    </div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  const fileEl = document.getElementById("file");
+  const colorEl = document.getElementById("color");
+  const widthEl = document.getElementById("width");
+  const glowEl  = document.getElementById("glow");
+  const alphaEl = document.getElementById("alpha");
+  const modeEl  = document.getElementById("mode");
+
+  const colorLabel = document.getElementById("colorLabel");
+  const widthLabel = document.getElementById("widthLabel");
+  const glowLabel  = document.getElementById("glowLabel");
+  const alphaLabel = document.getElementById("alphaLabel");
+
+  const undoBtn   = document.getElementById("undo");
+  const clearBtn  = document.getElementById("clear");
+  const exportBtn = document.getElementById("export");
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { willReadFrequently: false });
+
+  // Estado
+  const state = {
+    img: null,
+    imgScale: 1,
+    viewX: 0,
+    viewY: 0,
+    drawing: false,
+    panning: false,
+    lastX: 0,
+    lastY: 0,
+    strokes: [], // { points:[{x,y}], color, width, glow, alpha, erase:boolean }
+    history: []  // snapshots of strokes length for undo
+  };
+
+  // Helpers
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const toHexUpper = (hex) => (hex || "#000000").toUpperCase();
+
+  function setLabels(){
+    colorLabel.textContent = toHexUpper(colorEl.value);
+    widthLabel.textContent = `${widthEl.value}px`;
+    glowLabel.textContent  = `${glowEl.value}`;
+    alphaLabel.textContent = `${alphaEl.value}%`;
+  }
+  setLabels();
+  [colorEl, widthEl, glowEl, alphaEl].forEach(el => el.addEventListener("input", setLabels));
+
+  function enableActions(){
+    const hasImg = !!state.img;
+    const hasStrokes = state.strokes.length > 0;
+    exportBtn.disabled = !hasImg;
+    clearBtn.disabled  = !hasStrokes;
+    undoBtn.disabled   = state.history.length === 0;
+  }
+
+  // Ajuste canvas responsivo (corrección típica: manejar DPR)
+  function resizeCanvasToFitImage(){
+    if(!state.img) return;
+    const maxW = Math.min(window.innerWidth - 32, 1200);
+    const maxH = Math.min(window.innerHeight - 140, 720);
+
+    const iw = state.img.naturalWidth;
+    const ih = state.img.naturalHeight;
+
+    // Escala para que entre
+    const scale = Math.min(maxW / iw, maxH / ih, 1);
+    state.imgScale = scale;
+
+    const cssW = Math.floor(iw * scale);
+    const cssH = Math.floor(ih * scale);
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    state.viewX = 0;
+    state.viewY = 0;
+
+    draw();
+  }
+
+  function draw(){
+    if(!state.img){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      return;
+    }
+
+    const cssW = parseFloat(canvas.style.width) || canvas.width;
+    const cssH = parseFloat(canvas.style.height) || canvas.height;
+
+    ctx.clearRect(0,0,cssW,cssH);
+
+    // Dibuja imagen base
+    ctx.save();
+    ctx.translate(state.viewX, state.viewY);
+    ctx.drawImage(state.img, 0, 0, cssW, cssH);
+
+    // Dibuja LEDs
+    for(const s of state.strokes){
+      if(s.points.length < 2) continue;
+
+      ctx.save();
+      ctx.globalAlpha = s.alpha;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      if(s.erase){
+        // borrar (corrección: usar destination-out)
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.strokeStyle = "rgba(0,0,0,1)";
+        ctx.shadowBlur = 0;
+        ctx.lineWidth = s.width;
+      } else {
+        ctx.globalCompositeOperation = "screen";
+        ctx.strokeStyle = s.color;
+        ctx.shadowColor = s.color;
+        ctx.shadowBlur = s.glow;
+        ctx.lineWidth = s.width;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for(let i=1;i<s.points.length;i++){
+        ctx.lineTo(s.points[i].x, s.points[i].y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  function canvasPointFromEvent(e){
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) - state.viewX;
+    const y = (e.clientY - rect.top)  - state.viewY;
+    return { x, y };
+  }
+
+  function pushHistory(){
+    // Guarda longitudes para undo (simple y robusto)
+    state.history.push(state.strokes.length);
+    // Límite razonable
+    if(state.history.length > 50) state.history.shift();
+  }
+
+  // Input imagen
+  fileEl.addEventListener("change", async () => {
+    const file = fileEl.files?.[0];
+    if(!file) return;
+
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      state.img = img;
+      state.strokes = [];
+      state.history = [];
+      enableActions();
+      resizeCanvasToFitImage();
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      alert("No pude cargar la imagen.");
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  });
+
+  // Mouse / touch (corrección: Pointer Events unificados)
+  canvas.addEventListener("pointerdown", (e) => {
+    if(!state.img) return;
+
+    canvas.setPointerCapture(e.pointerId);
+
+    const mode = modeEl.value;
+    state.lastX = e.clientX;
+    state.lastY = e.clientY;
+
+    if(mode === "pan"){
+      state.panning = true;
+      return;
+    }
+
+    state.drawing = true;
+    pushHistory();
+
+    const p = canvasPointFromEvent(e);
+    const stroke = {
+      points: [p],
+      color: colorEl.value,
+      width: parseInt(widthEl.value, 10),
+      glow: parseInt(glowEl.value, 10),
+      alpha: parseInt(alphaEl.value, 10) / 100,
+      erase: (mode === "erase")
+    };
+    state.strokes.push(stroke);
+    enableActions();
+    draw();
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if(!state.img) return;
+
+    if(state.panning){
+      const dx = e.clientX - state.lastX;
+      const dy = e.clientY - state.lastY;
+      state.lastX = e.clientX;
+      state.lastY = e.clientY;
+
+      state.viewX += dx;
+      state.viewY += dy;
+      draw();
+      return;
+    }
+
+    if(!state.drawing) return;
+
+    const p = canvasPointFromEvent(e);
+    const last = state.strokes[state.strokes.length - 1];
+    if(!last) return;
+
+    // Corrección típica: reducir puntos demasiado densos (mejor rendimiento)
+    const prev = last.points[last.points.length - 1];
+    const dist2 = (p.x - prev.x)**2 + (p.y - prev.y)**2;
+    if(dist2 < 2.2) return;
+
+    last.points.push(p);
+    draw();
+  });
+
+  function endPointer(e){
+    state.drawing = false;
+    state.panning = false;
+    enableActions();
+  }
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", endPointer);
+  canvas.addEventListener("pointerleave", () => { state.drawing = false; });
+
+  // Botones
+  undoBtn.addEventListener("click", () => {
+    if(state.history.length === 0) return;
+    const prevLen = state.history.pop();
+    state.strokes = state.strokes.slice(0, prevLen);
+    enableActions();
+    draw();
+  });
+
+  clearBtn.addEventListener("click", () => {
+    if(state.strokes.length === 0) return;
+    pushHistory();
+    state.strokes = [];
+    enableActions();
+    draw();
+  });
+
+  exportBtn.addEventListener("click", () => {
+    if(!state.img) return;
+
+    // Exporta lo visible (imagen + LEDs)
+    // Corrección típica: export al tamaño CSS para que no salga gigante por DPR.
+    const rect = canvas.getBoundingClientRect();
+    const out = document.createElement("canvas");
+    out.width = Math.floor(rect.width);
+    out.height = Math.floor(rect.height);
+    const octx = out.getContext("2d");
+
+    // Render “limpio” sin DPR
+    octx.clearRect(0,0,out.width,out.height);
+    octx.save();
+    octx.translate(state.viewX, state.viewY);
+    octx.drawImage(state.img, 0, 0, rect.width, rect.height);
+
+    for(const s of state.strokes){
+      if(s.points.length < 2) continue;
+      octx.save();
+      octx.globalAlpha = s.alpha;
+      octx.lineCap = "round";
+      octx.lineJoin = "round";
+
+      if(s.erase){
+        octx.globalCompositeOperation = "destination-out";
+        octx.strokeStyle = "rgba(0,0,0,1)";
+        octx.shadowBlur = 0;
+        octx.lineWidth = s.width;
+      } else {
+        octx.globalCompositeOperation = "screen";
+        octx.strokeStyle = s.color;
+        octx.shadowColor = s.color;
+        octx.shadowBlur = s.glow;
+        octx.lineWidth = s.width;
+      }
+
+      octx.beginPath();
+      octx.moveTo(s.points[0].x, s.points[0].y);
+      for(let i=1;i<s.points.length;i++){
+        octx.lineTo(s.points[i].x, s.points[i].y);
+      }
+      octx.stroke();
+      octx.restore();
+    }
+    octx.restore();
+
+    const a = document.createElement("a");
+    a.download = "iluminacion_mockup.png";
+    a.href = out.toDataURL("image/png");
+    a.click();
+  });
+
+  window.addEventListener("resize", () => resizeCanvasToFitImage());
+
+})();
+</script>
+</body>
+</html>
